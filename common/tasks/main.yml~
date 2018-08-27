@@ -1,0 +1,208 @@
+---
+# Configure images and directory structure to mount and use with OverlayFS
+- name: make base directory for images
+  file:
+    path: /img
+    state: directory
+    owner: root
+    group: root
+  become: yes
+
+- name: check for existing base image
+  stat:
+    path: /img/base.img
+  register: base_created
+
+- name: create image files
+  shell: dd if=/dev/zero of={{ item }} bs=4096 count=1024000
+  args:
+    chdir: /img
+  loop: 
+    - 'base.img'
+    - 'image1.img'
+    - 'image2.img'
+  become: yes
+  when: base_created.stat.exists == False
+
+- name: create filesystems
+  shell: /sbin/mkfs.ext4 -F /img/{{ item }} -L rootdisk
+  args:
+    chdir: /img
+  loop: 
+    - 'base.img'
+    - 'image1.img'
+    - 'image2.img'
+  become: yes
+  when: base_created.stat.exists == False
+
+- name: make mount directories for overlayFS
+  file:
+    path: /mnt/{{ item }}
+    state: directory
+    owner: root
+    group: root
+  loop: 
+    - 'base'
+    - 'image1'
+    - 'image2'
+  become: yes
+
+- name: make overlay directories for overlayFS
+  file:
+    path: /opt/img/{{ item }}/
+    state: directory
+    owner: root
+    group: root
+  loop: 
+    - 'image1.img'
+    - 'image2.img'
+  become: yes
+
+- name: mount images
+  mount:
+      state: mounted
+      path: /mnt/{{ item }}
+      fstype: ext4
+      src: /img/{{ item }}.img
+  loop: 
+    - 'base'
+    - 'image1'
+    - 'image2'
+  become: yes
+
+- name: make working directories for overlayFS
+  file:
+    path: /mnt/{{ item }}/working
+    state: directory
+    owner: root
+    group: root
+  loop: 
+    - 'image1'
+    - 'image2'
+  become: yes
+
+- name: make upper directories for overlayFS
+  file:
+    path: /mnt/{{ item }}/upper
+    state: directory
+    owner: root
+    group: root
+  loop: 
+    - 'image1'
+    - 'image2'
+  become: yes
+
+- name: make overlay directories for overlayFS
+  file:
+    path: /opt/img/{{ item }}/root
+    state: directory
+    owner: root
+    group: root
+  loop: 
+    - 'image1'
+    - 'image2'
+  become: yes
+
+- name: Mount overlay
+  shell: mount -t overlay -o lowerdir=/mnt/base,upperdir=/mnt/{{ item }}/upper,workdir=/mnt/{{ item }}/working none /opt/img/{{ item }}/root
+  loop: 
+    - 'image1'
+    - 'image2'
+  become: yes
+
+- name: Make base etc directory
+  file:
+    path: /mnt/base/etc/
+    state: directory
+    owner: root
+    group: root
+  become: yes
+
+# Configure yum and install CentOS on base layer.
+
+- name: Copy yum.conf - base
+  copy:
+    src: yum.conf
+    dest: /mnt/base/etc/yum.conf
+    owner: root
+    group: root
+    mode: 0644
+  become: yes
+
+- name: Make a necessary directory - base
+  file:
+    path: "/mnt/base/etc/yum/vars/"
+    state: directory
+    mode: 0755
+  become: yes
+
+- name: Populate directory - base
+  copy:
+    content: "7\n"
+    dest: "/mnt/base/etc/yum/vars/releasever"
+  become: yes
+
+- name: Install minimal centos - base
+  yum:
+    name: "@^Minimal Install"
+    disablerepo: "*"
+    enablerepo: "img-*"    
+    state: present
+    installroot: "/mnt/base/"
+    conf_file: yum.conf
+  become: yes
+
+- name: Install epel repository - base
+  yum:
+    name: epel-release
+    state: present
+    installroot: "/opt/img/{{ item }}/root/"
+  loop:
+    - 'image1'
+    - 'image2'
+  become: yes
+
+# For accessing the images via ssh after deployment
+
+- name: Create public keys
+  user:
+    name: root
+    generate_ssh_key: yes
+    ssh_key_bits: 2048
+    ssh_key_file: .ssh/id_rsa
+  become: yes
+
+- name: Create key directory
+  file:
+    path: /mnt/base/root/.ssh
+    state: directory
+    owner: root
+    group: root
+    mode: 0700
+  become: yes
+
+- name: Copy keys
+  copy:
+    src: /root/.ssh/id_rsa.pub
+    dest: /mnt/base/root/.ssh/authorized_keys
+    remote_src: yes
+    owner: root
+    group: root
+    mode: 0600
+  become: yes
+
+# Install image specific software.
+
+- name: Install nano  - image1
+  yum:
+    name: nano
+    state: present
+    installroot: "/opt/img/image1/root"
+  become: yes
+
+- name: Install gcc - image2
+  yum:
+    name: gcc
+    state: present
+    installroot: "/opt/img/image2/root"
+  become: yes
